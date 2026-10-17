@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "backend": "npm --prefix server start",
     "preview": "vite preview"
   },
   "dependencies": {
