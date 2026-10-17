@@ -6,7 +6,17 @@ export function createApp({ frontendOrigin, pool = null }) {
   const app = express()
 
   app.disable('x-powered-by')
-  app.use(cors({ origin: frontendOrigin }))
+  app.use(cors({
+  origin: (origin, callback) => {
+    const isLocalhost = /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin || '')
+
+    if (!origin || origin === frontendOrigin || isLocalhost) {
+      return callback(null, true)
+    }
+
+    return callback(new Error('Origin not allowed by CORS'))
+  },
+}))
   app.use(express.json({ limit: '32kb' }))
 
   app.get('/api/v1/health', (_request, response) => {

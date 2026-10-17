@@ -1,3 +1,4 @@
+import { getOrders, createOrder } from './api'
 import { useEffect, useMemo, useState } from 'react'
 import { DEFAULT_CONSTRAINTS, buildRouteRecommendations, compareCosts } from './routeEngine'
 import { SHOP_NAMES, readOrders, resetDemoData, writeOrders } from './storage'
@@ -41,27 +42,53 @@ function App() {
     return text.includes(query.toLowerCase()) && (statusFilter === 'All statuses' || order.status === statusFilter)
   })
 
-  useEffect(() => { writeOrders(orders) }, [orders])
+  
+useEffect(() => {
+  let active = true
+
+  getOrders()
+    .then((databaseOrders) => {
+      if (active) setOrders(databaseOrders)
+    })
+    .catch((error) => {
+      if (active) {
+        setNotice(`Could not load database orders: ${error.message}`)
+      }
+    })
+
+  return () => {
+    active = false
+  }
+}, [])
+
+useEffect(() => {
+  writeOrders(orders)
+}, [orders])
 
   function updateOrder(id, updater) {
     setOrders((current) => current.map((order) => order.id === id ? updater(order) : order))
   }
 
-  function addOrder(event) {
+  
+  async function addOrder(event) {
     event.preventDefault()
-    const form = new FormData(event.currentTarget)
+    const formElement = event.currentTarget
+    const form = new FormData(formElement)
     const deadline = new Date(String(form.get('deadline')))
     const units = Number(form.get('units'))
+
     if (!Number.isFinite(units) || units < 1 || units > 20) {
       setNotice('Package units must be between 1 and 20.')
       return false
     }
+
     if (deadline.getTime() <= Date.now()) {
       setNotice('Choose a delivery deadline in the future.')
       return false
     }
+
     const order = {
-      id: `BD-${Date.now().toString().slice(-6)}`,
+      id: `BD-${Date.now()}`,
       shop: String(form.get('shop')),
       destination: String(form.get('destination')).trim(),
       x: Number(form.get('x')),
@@ -70,10 +97,17 @@ function App() {
       deadline: deadline.toISOString(),
       status: form.get('ready') === 'on' ? 'Ready' : 'Preparing',
     }
-    setOrders((current) => [order, ...current])
-    event.currentTarget.reset()
-    setNotice(`${order.id} added. It is saved in this browser.`)
-    return true
+
+    try {
+      const savedOrder = await createOrder(order)
+      setOrders((current) => [savedOrder, ...current])
+      formElement.reset()
+      setNotice(`${savedOrder.id} saved to the database.`)
+      return true
+    } catch (error) {
+      setNotice(`Order was not saved: ${error.message}`)
+      return false
+    }
   }
 
   function resetData() {
@@ -146,8 +180,8 @@ function OrdersPage({ orders, visibleOrders, query, onQuery, statusFilter, onSta
     if (!formOpen) setDeadlineDefault(localInputTime(new Date(Date.now() + 60 * 60_000)))
     setFormOpen((open) => !open)
   }
-  function submitOrder(event) {
-    if (onAddOrder(event)) setFormOpen(false)
+ async function submitOrder(event) {
+  if (await onAddOrder(event)) setFormOpen(false)
   }
   return <>
     <PageHeading eyebrow="ORDER MANAGEMENT" title="Orders" description={`${orders.length} orders in this browser’s local demo workspace.`} action={<button className="button button-primary" onClick={toggleForm}><Icon name="plus" /> Add order</button>} />
