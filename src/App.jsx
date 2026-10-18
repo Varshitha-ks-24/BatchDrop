@@ -1,7 +1,8 @@
 import { getOrders, createOrder } from './api'
-import { useEffect, useMemo, useState } from 'react'
+import { buildOrderFromForm } from './orderForm'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { DEFAULT_CONSTRAINTS, buildRouteRecommendations, compareCosts } from './routeEngine'
-import { SHOP_NAMES, readOrders, resetDemoData, writeOrders } from './storage'
+import { createSampleOrders, SHOP_NAMES } from './storage'
 import './App.css'
 
 const money = (value) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(value)
@@ -25,13 +26,17 @@ function Icon({ name, size = 18 }) {
 }
 
 function App() {
-  const [orders, setOrders] = useState(readOrders)
+  const [orders, setOrders] = useState([])
+  const [isLoadingOrders, setIsLoadingOrders] = useState(true)
+  const [isDemoMode, setIsDemoMode] = useState(false)
   const [page, setPage] = useState('Overview')
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('All statuses')
   const [constraints, setConstraints] = useState(DEFAULT_CONSTRAINTS)
   const [notice, setNotice] = useState('')
   const [reviewRoute, setReviewRoute] = useState(null)
+  const [isSavingOrder, setIsSavingOrder] = useState(false)
+  const savingOrderRef = useRef(false)
 
   const analysis = useMemo(() => buildRouteRecommendations(orders, constraints), [orders, constraints])
   const costs = useMemo(() => compareCosts(analysis.routes, constraints), [analysis.routes, constraints])
@@ -44,60 +49,61 @@ function App() {
 
   
 useEffect(() => {
+  if (isDemoMode) return undefined
   let active = true
 
   getOrders()
     .then((databaseOrders) => {
-      if (active) setOrders(databaseOrders)
+      if (active) {
+        setOrders(databaseOrders)
+        setIsLoadingOrders(false)
+      }
     })
     .catch((error) => {
       if (active) {
         setNotice(`Could not load database orders: ${error.message}`)
+        setOrders([])
+        setIsLoadingOrders(false)
       }
     })
 
   return () => {
     active = false
   }
-}, [])
+}, [isDemoMode])
 
-useEffect(() => {
-  writeOrders(orders)
-}, [orders])
-
-  function updateOrder(id, updater) {
-    setOrders((current) => current.map((order) => order.id === id ? updater(order) : order))
+  function loadDemoData() {
+    setIsDemoMode(true)
+    setOrders(createSampleOrders())
+    setIsLoadingOrders(false)
+    setQuery('')
+    setStatusFilter('All statuses')
+    setReviewRoute(null)
+    setNotice('Demo Mode — Sample Data loaded in memory only. These orders are not saved or sent to the database.')
   }
 
   
   async function addOrder(event) {
     event.preventDefault()
+    if (isDemoMode) {
+      setNotice('Demo Mode is read-only. This order was not saved.')
+      return false
+    }
+    if (isLoadingOrders) {
+      setNotice('Wait for database orders to finish loading before saving a new order.')
+      return false
+    }
+    if (savingOrderRef.current) return false
+
     const formElement = event.currentTarget
-    const form = new FormData(formElement)
-    const deadline = new Date(String(form.get('deadline')))
-    const units = Number(form.get('units'))
-
-    if (!Number.isFinite(units) || units < 1 || units > 20) {
-      setNotice('Package units must be between 1 and 20.')
+    const { order, error: validationError } = buildOrderFromForm(new FormData(formElement))
+    if (validationError) {
+      setNotice(validationError)
       return false
     }
 
-    if (deadline.getTime() <= Date.now()) {
-      setNotice('Choose a delivery deadline in the future.')
-      return false
-    }
-
-    const order = {
-      id: `BD-${Date.now()}`,
-      shop: String(form.get('shop')),
-      destination: String(form.get('destination')).trim(),
-      x: Number(form.get('x')),
-      y: Number(form.get('y')),
-      units,
-      deadline: deadline.toISOString(),
-      status: form.get('ready') === 'on' ? 'Ready' : 'Preparing',
-    }
-
+    savingOrderRef.current = true
+    setIsSavingOrder(true)
     try {
       const savedOrder = await createOrder(order)
       setOrders((current) => [savedOrder, ...current])
@@ -107,22 +113,21 @@ useEffect(() => {
     } catch (error) {
       setNotice(`Order was not saved: ${error.message}`)
       return false
+    } finally {
+      savingOrderRef.current = false
+      setIsSavingOrder(false)
     }
   }
 
   function resetData() {
-    if (!window.confirm('Reset all saved orders to the original BatchDrop demo data? This replaces orders in this browser.')) return
-    setOrders(resetDemoData())
-    setQuery('')
-    setStatusFilter('All statuses')
-    setNotice('Demo orders restored and saved in this browser.')
+    setNotice(isDemoMode
+      ? 'Demo data is temporary and has not been changed in storage.'
+      : 'Demo reset is unavailable for database orders. No orders were changed.')
   }
 
   function approveRoute(route) {
-    const included = new Set(route.orderIds)
-    setOrders((current) => current.map((order) => included.has(order.id) ? { ...order, status: 'Approved' } : order))
+    setNotice(`${route.id} was not approved: shared route approval is not available in the database API. No orders were changed.`)
     setReviewRoute(null)
-    setNotice(`${route.id} approved for review. No driver has been dispatched.`)
   }
 
   function goToRoutes() {
@@ -132,22 +137,26 @@ useEffect(() => {
       : 'No compatible route meets the current constraints. Review the exclusions below.')
   }
 
-  const toggleReady = (id) => updateOrder(id, (order) => ({ ...order, status: order.status === 'Ready' ? 'Preparing' : 'Ready' }))
+  const toggleReady = () => setNotice(isDemoMode
+    ? 'Demo Mode is read-only. No sample order status was changed.'
+    : 'Readiness updates are not available in the database API yet. No order status was changed.')
 
   return <div className="app-shell">
     <aside className="sidebar">
       <button className="brand" onClick={() => setPage('Overview')} aria-label="BatchDrop overview"><span className="brand-mark"><Icon name="route" size={20} /></span><span>batch<span>drop</span><small>NEIGHBORHOOD LOGISTICS</small></span></button>
       <div className="side-label">WORKSPACE</div>
       <nav className="side-nav" aria-label="Main navigation">{[['Overview', 'grid'], ['Orders', 'box'], ['Routes', 'route']].map(([label, icon]) => <button key={label} className={`nav-item ${page === label ? 'active' : ''}`} aria-label={label} title={label} onClick={() => setPage(label)}><Icon name={icon} /><span>{label}</span>{label === 'Orders' && <span className="nav-count">{orders.length}</span>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="demo-status"><i className="pulse-dot" />LOCAL DEMO MODE</div><p>Orders are saved in this browser only. Nothing is shared with other shops or devices.</p><button className="reset-button" onClick={resetData} title="Restore the original fictional sample orders"><Icon name="refresh" size={15} /> Reset demo data</button></div>
+      <div className="sidebar-bottom"><div className="demo-status"><i className="pulse-dot" />{isDemoMode ? 'DEMO MODE · NOT SAVED' : 'DATABASE MODE'}</div><p>{isDemoMode ? 'Sample data exists only in this tab’s memory. It is not sent to or saved by the database.' : 'Orders load from the BatchDrop API. Failed saves are reported and are not stored as successful.'}</p>{!isDemoMode && <button className="reset-button" onClick={resetData} title="Database reset is unavailable"><Icon name="refresh" size={15} /> Reset demo data</button>}</div>
     </aside>
 
-    <main className="main-area"><header className="topbar"><div className="crumb"><span>Workspace</span><b>/</b><strong>{page}</strong></div><div className="topbar-meta"><button className="mobile-reset" aria-label="Reset demo data" title="Reset demo data" onClick={resetData}><Icon name="refresh" size={15} /></button><span className="local-pill"><i /> Saved locally</span><span className="top-date">{new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date())}</span></div></header>
+    <main className="main-area"><header className="topbar"><div className="crumb"><span>Workspace</span><b>/</b><strong>{page}</strong></div><div className="topbar-meta"><span className="local-pill"><i /> {isDemoMode ? 'DEMO DATA · NOT SAVED' : 'API-backed'}</span><span className="top-date">{new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date())}</span></div></header>
       <div className="page-content">{notice && <div className="notice" role="status"><span>{notice}</span><button aria-label="Dismiss notification" onClick={() => setNotice('')}><Icon name="close" size={16} /></button></div>}
-        {page === 'Overview' && <OverviewPage orders={orders} routes={analysis.routes} eligibleCount={eligibleCount} readyCount={readyCount} costs={costs} onFindRoutes={goToRoutes} onOrders={() => setPage('Orders')} onToggleReady={toggleReady} />}
-        {page === 'Orders' && <OrdersPage orders={orders} visibleOrders={visibleOrders} query={query} onQuery={setQuery} statusFilter={statusFilter} onStatusFilter={setStatusFilter} onAddOrder={addOrder} onToggleReady={toggleReady} />}
-        {page === 'Routes' && <RoutesPage analysis={analysis} costs={costs} constraints={constraints} onConstraintChange={(key, value) => setConstraints((current) => ({ ...current, [key]: Number(value) }))} onReview={setReviewRoute} onOrders={() => setPage('Orders')} />}
-      </div><footer className="page-footer">BatchDrop local demo <span>·</span> Distances, travel times, and costs are simulated estimates, not measured road data. <span>·</span> Orders are saved in this browser only, not shared or synchronized.</footer>
+        {isLoadingOrders && <div className="notice" role="status">Loading orders from the BatchDrop API…</div>}
+        {isDemoMode && <div className="notice demo-notice" role="status"><strong>DEMO DATA — NOT PERSISTED</strong><span>Sample orders are in memory only. Refreshing or closing this tab discards them.</span></div>}
+        {page === 'Overview' && <OverviewPage orders={orders} routes={analysis.routes} eligibleCount={eligibleCount} readyCount={readyCount} costs={costs} onFindRoutes={goToRoutes} onOrders={() => setPage('Orders')} onToggleReady={toggleReady} onLoadDemo={loadDemoData} isDemoMode={isDemoMode} />}
+        {page === 'Orders' && <OrdersPage orders={orders} visibleOrders={visibleOrders} query={query} onQuery={setQuery} statusFilter={statusFilter} onStatusFilter={setStatusFilter} onAddOrder={addOrder} onToggleReady={toggleReady} isSavingOrder={isSavingOrder} isLoadingOrders={isLoadingOrders} isDemoMode={isDemoMode} />}
+        {page === 'Routes' && <RoutesPage analysis={analysis} costs={costs} constraints={constraints} onConstraintChange={(key, value) => setConstraints((current) => ({ ...current, [key]: Number(value) }))} onReview={setReviewRoute} onOrders={() => setPage('Orders')} isLoadingOrders={isLoadingOrders} />}
+      </div><footer className="page-footer">BatchDrop local demo <span>·</span> Distances, travel times, and costs are simulated estimates, not measured road data. <span>·</span> Address-only orders are not geocoded or routed.</footer>
     </main>
     {reviewRoute && <ReviewModal route={reviewRoute} costs={costs} constraints={constraints} onClose={() => setReviewRoute(null)} onApprove={() => approveRoute(reviewRoute)} />}
   </div>
@@ -157,11 +166,11 @@ function PageHeading({ eyebrow, title, description, action }) {
   return <div className="page-heading"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>
 }
 
-function OverviewPage({ orders, routes, eligibleCount, readyCount, costs, onFindRoutes, onOrders, onToggleReady }) {
+function OverviewPage({ orders, routes, eligibleCount, readyCount, costs, onFindRoutes, onOrders, onToggleReady, onLoadDemo, isDemoMode }) {
   const recentOrders = [...orders].sort((a, b) => b.id.localeCompare(a.id)).slice(0, 5)
   const included = new Set(routes.flatMap((route) => route.orderIds))
   return <>
-    <PageHeading eyebrow="NEIGHBORHOOD DELIVERY, TOGETHER" title="Good morning, team." description="A clearer view of what is ready, what can travel together, and what each trip might cost." action={<button className="button button-primary" onClick={onFindRoutes}><Icon name="route" /> Find shared routes <Icon name="arrow" size={16} /></button>} />
+    <PageHeading eyebrow="NEIGHBORHOOD DELIVERY, TOGETHER" title="Good morning, team." description="A clearer view of what is ready, what can travel together, and what each trip might cost." action={<div className="heading-actions">{!isDemoMode && <button className="button button-quiet" onClick={onLoadDemo}>Demo Mode — Sample Data</button>}<button className="button button-primary" onClick={onFindRoutes}><Icon name="route" /> Find shared routes <Icon name="arrow" size={16} /></button></div>} />
     <section className="metric-grid" aria-label="Order and route metrics"><Metric label="Total orders" value={orders.length} detail={`${readyCount} ready for pickup`} icon="box" tone="forest" /><Metric label="Eligible to share" value={eligibleCount} detail="In a feasible suggested route" icon="check" tone="lime" /><Metric label="Suggested routes" value={routes.length} detail="Recalculated from current orders" icon="route" tone="sage" /><Metric label="Estimated savings" value={routes.length ? money(costs.netSavings) : '—'} detail={routes.length ? `${Math.abs(costs.savingsPercent).toFixed(0)}% vs separate trips` : 'No route to compare'} icon="arrow" tone="terra" /></section>
     <div className="dashboard-grid"><section className="panel recent-panel"><div className="panel-heading"><div><span className="section-kicker">LIVE ORDER BOARD</span><h2>Recent orders</h2></div><button className="text-button" onClick={onOrders}>All orders <Icon name="arrow" size={15} /></button></div>{recentOrders.length ? <OrdersTable orders={recentOrders} routeOrderIds={included} onToggleReady={onToggleReady} compact /> : <EmptyState title="No orders yet" text="Add an order to start building your neighborhood delivery pool." />}</section>
       <section className="panel savings-panel"><span className="section-kicker">WHY BATCHDROP</span><h2>One neighborhood.<br /><em>Fewer repeated trips.</em></h2><p>BatchDrop checks which ready orders can fit together before suggesting a route. Each stop must be close, fit the vehicle, and meet its delivery deadline.</p><div className="savings-divider" />{routes.length ? <div className="mini-comparison"><div><span>Separate trips</span><strong>{money(costs.separateCost)}</strong></div><b className="mini-arrow">→</b><div><span>Shared estimate</span><strong>{money(costs.sharedCost)}</strong></div></div> : <p className="no-comparison">No eligible shared route to compare yet.</p>}<small>Illustrative estimate using the same cost model as the Routes page.</small></section></div>
@@ -173,9 +182,10 @@ function Metric({ label, value, detail, icon, tone }) {
   return <article className={`metric-card metric-${tone}`}><div className="metric-top"><span>{label}</span><i><Icon name={icon} size={17} /></i></div><strong className="metric-value">{value}</strong><small>{detail}</small></article>
 }
 
-function OrdersPage({ orders, visibleOrders, query, onQuery, statusFilter, onStatusFilter, onAddOrder, onToggleReady }) {
+function OrdersPage({ orders, visibleOrders, query, onQuery, statusFilter, onStatusFilter, onAddOrder, onToggleReady, isSavingOrder, isLoadingOrders, isDemoMode }) {
   const [formOpen, setFormOpen] = useState(false)
   const [deadlineDefault, setDeadlineDefault] = useState('')
+  const [locationType, setLocationType] = useState('demo-grid')
   function toggleForm() {
     if (!formOpen) setDeadlineDefault(localInputTime(new Date(Date.now() + 60 * 60_000)))
     setFormOpen((open) => !open)
@@ -184,17 +194,19 @@ function OrdersPage({ orders, visibleOrders, query, onQuery, statusFilter, onSta
   if (await onAddOrder(event)) setFormOpen(false)
   }
   return <>
-    <PageHeading eyebrow="ORDER MANAGEMENT" title="Orders" description={`${orders.length} orders in this browser’s local demo workspace.`} action={<button className="button button-primary" onClick={toggleForm}><Icon name="plus" /> Add order</button>} />
-    {formOpen && <section className="panel add-order-panel"><div className="panel-heading"><div><span className="section-kicker">NEW DELIVERY REQUEST</span><h2>Add an order</h2></div><button className="icon-button" aria-label="Close add order form" onClick={() => setFormOpen(false)}><Icon name="close" /></button></div><form className="order-form" onSubmit={submitOrder}>
-      <label>Shop<select name="shop" required>{SHOP_NAMES.map((shop) => <option key={shop}>{shop}</option>)}</select></label><label>Delivery zone<input name="destination" required maxLength="48" placeholder="e.g. Cedar Square" /></label><label>Grid X (km)<input name="x" type="number" min="0" max="12" step="0.1" defaultValue="1.0" required /></label><label>Grid Y (km)<input name="y" type="number" min="0" max="12" step="0.1" defaultValue="1.0" required /></label><label>Package units<input name="units" type="number" min="1" max="20" step="1" defaultValue="1" required /></label><label>Deliver by<input name="deadline" type="datetime-local" min={localInputTime(new Date())} defaultValue={deadlineDefault} required /></label><label className="form-check"><input name="ready" type="checkbox" defaultChecked /> Ready for pickup</label><div className="form-note">Coordinates use a local demo grid in km from the neighborhood depot at (0, 0). They are not GPS locations.</div><div className="form-actions"><button className="button button-quiet" type="button" onClick={() => setFormOpen(false)}>Cancel</button><button className="button button-primary" type="submit"><Icon name="plus" /> Save order</button></div>
+    <PageHeading eyebrow={isDemoMode ? 'DEMO DATA · NOT PERSISTED' : 'ORDER MANAGEMENT'} title="Orders" description={`${orders.length} ${isDemoMode ? 'sample orders loaded in memory only.' : 'orders returned by the database API.'}`} action={isDemoMode ? null : <button className="button button-primary" onClick={toggleForm}><Icon name="plus" /> Add order</button>} />
+    {!isDemoMode && formOpen && <section className="panel add-order-panel"><div className="panel-heading"><div><span className="section-kicker">NEW DELIVERY REQUEST</span><h2>Add an order</h2></div><button className="icon-button" aria-label="Close add order form" onClick={() => setFormOpen(false)}><Icon name="close" /></button></div><form className="order-form" onSubmit={submitOrder}>
+      <label>Shop<select name="shop" required>{SHOP_NAMES.map((shop) => <option key={shop}>{shop}</option>)}</select></label><label>Location mode<select name="locationType" value={locationType} onChange={(event) => setLocationType(event.target.value)}><option value="demo-grid">Demo grid coordinates</option><option value="address">Street addresses</option></select></label>
+      {locationType === 'address' ? <><label>Shop pickup address<input name="pickupAddress" required maxLength="180" placeholder="Street, city, postal code" /></label><label>Customer delivery address<input name="destination" required maxLength="180" placeholder="Street, city, postal code" /></label><div className="form-note address-note">Address saved only. Geocoding and road routing are not configured, so this order will not be included in route suggestions.</div></> : <><label>Delivery zone<input name="destination" required maxLength="48" placeholder="e.g. Cedar Square" /></label><label>Grid X (km)<input name="x" type="number" min="0" max="12" step="0.1" defaultValue="1.0" required /></label><label>Grid Y (km)<input name="y" type="number" min="0" max="12" step="0.1" defaultValue="1.0" required /></label><div className="form-note">Coordinates use a local demo grid in km from the neighborhood depot at (0, 0). They are not GPS locations.</div></>}
+      <label>Package units<input name="units" type="number" min="1" max="20" step="1" defaultValue="1" required /></label><label>Deliver by<input name="deadline" type="datetime-local" min={localInputTime(new Date())} defaultValue={deadlineDefault} required /></label><label className="form-check"><input name="ready" type="checkbox" defaultChecked /> Ready for pickup</label><div className="form-actions"><button className="button button-quiet" type="button" onClick={() => setFormOpen(false)} disabled={isSavingOrder}>Cancel</button><button className="button button-primary" type="submit" disabled={isSavingOrder} aria-busy={isSavingOrder}><Icon name="plus" /> {isSavingOrder ? 'Saving…' : 'Save order'}</button></div>
     </form></section>}
-    <section className="panel orders-panel"><div className="orders-toolbar"><div><span className="section-kicker">SAVED ORDER LIST</span><h2>All orders <span className="muted-count">{visibleOrders.length} of {orders.length}</span></h2></div><div className="filters"><label className="search-control"><Icon name="search" size={16} /><input aria-label="Search orders" placeholder="Search shop, zone, ID" value={query} onChange={(event) => onQuery(event.target.value)} /></label><select aria-label="Filter by order status" value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option>All statuses</option><option>Ready</option><option>Preparing</option><option>Approved</option></select></div></div>{visibleOrders.length ? <OrdersTable orders={visibleOrders} routeOrderIds={new Set()} onToggleReady={onToggleReady} /> : <EmptyState title={orders.length ? 'No matching orders' : 'No orders yet'} text={orders.length ? 'Try a different search or status filter, or add an order.' : 'Add an order to start building your neighborhood delivery pool.'} />}</section>
-    <p className="storage-note"><Icon name="check" size={15} /> Changes are stored in localStorage in this browser. They are not synchronized with other shops or devices.</p>
+    <section className="panel orders-panel"><div className="orders-toolbar"><div><span className="section-kicker">DATABASE ORDER LIST</span><h2>All orders <span className="muted-count">{visibleOrders.length} of {orders.length}</span></h2></div><div className="filters"><label className="search-control"><Icon name="search" size={16} /><input aria-label="Search orders" placeholder="Search shop, zone, ID" value={query} onChange={(event) => onQuery(event.target.value)} /></label><select aria-label="Filter by order status" value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option>All statuses</option><option>Ready</option><option>Preparing</option><option>Approved</option></select></div></div>{isLoadingOrders ? <EmptyState title="Loading orders" text="Waiting for the BatchDrop API response." /> : visibleOrders.length ? <OrdersTable orders={visibleOrders} routeOrderIds={new Set()} onToggleReady={onToggleReady} /> : <EmptyState title={orders.length ? 'No matching orders' : 'No database orders'} text={orders.length ? 'Try a different search or status filter, or add an order.' : 'The API returned no orders. Demo samples are not substituted for database data.'} />}</section>
+    <p className="storage-note"><Icon name="check" size={15} /> Successful order creation is confirmed by the API. This screen does not use localStorage as a database fallback.</p>
   </>
 }
 
 function OrdersTable({ orders, routeOrderIds, onToggleReady, compact = false }) {
-  return <div className={`table-scroll ${compact ? 'compact-table' : ''}`}><table className="orders-table"><thead><tr><th>Order</th><th>Shop</th><th>Destination</th><th>Ready by</th><th>Package</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{orders.map((order) => <tr key={order.id}><td><strong className="order-id">{order.id}</strong></td><td>{order.shop}</td><td><span className="destination-name">{order.destination}</span><small className="coordinates">{order.x.toFixed(1)}, {order.y.toFixed(1)} km grid</small></td><td>{dateTime(order.deadline)}</td><td>{order.units} unit{order.units === 1 ? '' : 's'}</td><td><StatusBadge status={order.status} routed={routeOrderIds.has(order.id)} /></td><td>{order.status === 'Approved' ? <span className="approved-mark" title="Approved for review"><Icon name="check" size={16} /></span> : <button className={`ready-toggle ${order.status === 'Ready' ? 'is-ready' : ''}`} onClick={() => onToggleReady(order.id)} aria-label={`${order.status === 'Ready' ? 'Mark not ready' : 'Mark ready'}: ${order.id}`} title={order.status === 'Ready' ? 'Mark not ready' : 'Mark ready'}>{order.status === 'Ready' ? <Icon name="check" size={15} /> : <span className="toggle-dot" />}</button>}</td></tr>)}</tbody></table></div>
+  return <div className={`table-scroll ${compact ? 'compact-table' : ''}`}><table className="orders-table"><thead><tr><th>Order</th><th>Shop</th><th>Destination</th><th>Ready by</th><th>Package</th><th>Status</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{orders.map((order) => <tr key={order.id}><td><strong className="order-id">{order.id}</strong></td><td>{order.shop}</td><td><span className="destination-name">{order.destination}</span><small className="coordinates">{order.locationType === 'address' ? `Address · pickup: ${order.pickupAddress}` : `${order.x.toFixed(1)}, ${order.y.toFixed(1)} km demo grid`}</small></td><td>{dateTime(order.deadline)}</td><td>{order.units} unit{order.units === 1 ? '' : 's'}</td><td><StatusBadge status={order.status} routed={routeOrderIds.has(order.id)} /></td><td>{order.status === 'Approved' ? <span className="approved-mark" title="Approved for review"><Icon name="check" size={16} /></span> : <button className={`ready-toggle ${order.status === 'Ready' ? 'is-ready' : ''}`} onClick={() => onToggleReady(order.id)} aria-label={`${order.status === 'Ready' ? 'Mark not ready' : 'Mark ready'}: ${order.id}`} title={order.status === 'Ready' ? 'Mark not ready' : 'Mark ready'}>{order.status === 'Ready' ? <Icon name="check" size={15} /> : <span className="toggle-dot" />}</button>}</td></tr>)}</tbody></table></div>
 }
 
 function StatusBadge({ status, routed }) {
@@ -226,7 +238,7 @@ function CostOption({ label, amount, distance, time, color }) {
 
 function ReviewModal({ route, costs, constraints, onClose, onApprove }) {
   const routeCost = route.distanceKm * constraints.costPerKm + constraints.costPerTrip
-  return <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><div className="modal-top"><span className="section-kicker">REVIEW SUGGESTION · {route.id}</span><button className="icon-button" aria-label="Close review" onClick={onClose}><Icon name="close" /></button></div><h2 id="review-title">Approve this shared route?</h2><p className="modal-copy">Approval marks these orders for review in the local demo. This does not assign a driver or dispatch a delivery.</p><div className="review-summary"><div><span>PARTICIPATING SHOPS</span><strong>{route.shops.join(' + ')}</strong></div><div><span>ORDER IDS</span><strong>{route.orderIds.join(', ')}</strong></div><div><span>EST. ROUTE</span><strong>{route.distanceKm.toFixed(1)} km · {route.durationMinutes} min</strong></div><div><span>EST. SHARED COST</span><strong>{money(routeCost)}</strong></div><div><span>COMPARED WITH SEPARATE</span><strong>{money(costs.separateCost)}</strong></div></div><div className="modal-actions"><button className="button button-quiet" onClick={onClose}>Keep as suggestion</button><button className="button button-primary" onClick={onApprove}><Icon name="check" /> Approve for review</button></div></section></div>
+  return <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><div className="modal-top"><span className="section-kicker">REVIEW SUGGESTION · {route.id}</span><button className="icon-button" aria-label="Close review" onClick={onClose}><Icon name="close" /></button></div><h2 id="review-title">Approve this shared route?</h2><p className="modal-copy">Route approval is unavailable until an authorized database endpoint is implemented. No orders will be changed or dispatched.</p><div className="review-summary"><div><span>PARTICIPATING SHOPS</span><strong>{route.shops.join(' + ')}</strong></div><div><span>ORDER IDS</span><strong>{route.orderIds.join(', ')}</strong></div><div><span>EST. ROUTE</span><strong>{route.distanceKm.toFixed(1)} km · {route.durationMinutes} min</strong></div><div><span>EST. SHARED COST</span><strong>{money(routeCost)}</strong></div><div><span>COMPARED WITH SEPARATE</span><strong>{money(costs.separateCost)}</strong></div></div><div className="modal-actions"><button className="button button-quiet" onClick={onClose}>Keep as suggestion</button><button className="button button-primary" onClick={onApprove}><Icon name="check" /> Approval unavailable</button></div></section></div>
 }
 
 function EmptyState({ title, text }) {

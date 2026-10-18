@@ -50,6 +50,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .top-date { color: #818a83; font-size: 11px; }
 .page-content { width: min(1320px, 100%); margin: 0 auto; padding: 40px 44px 25px; box-sizing: border-box; flex: 1; }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 22px; margin: 2px 0 27px; }
+.heading-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .eyebrow, .section-kicker { display: block; color: #75827a; font-size: 9px; font-weight: 700; letter-spacing: 1.35px; line-height: 1.4; }
 .page-heading h1 { margin: 9px 0 6px; color: var(--forest); font: 700 31px/1.18 var(--heading); letter-spacing: 0; }
 .page-heading p { margin: 0; color: #768078; font-size: 12px; line-height: 1.5; }
@@ -139,6 +140,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .order-form .form-check { display: flex; align-items: center; gap: 8px; min-height: 37px; color: #516157; }
 .form-check input { width: 15px; height: 15px; accent-color: #557132; }
 .form-note { grid-column: span 2; display: flex; align-items: center; color: #8a948c; font-size: 9px; line-height: 1.5; }
+.address-note { grid-column: 1 / -1; }
 .form-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
 .storage-note { display: flex; gap: 7px; align-items: center; margin: 14px 2px; color: #738078; font-size: 10px; }
 .storage-note svg { color: #748d42; }
